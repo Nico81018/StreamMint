@@ -112,3 +112,119 @@ echo "🎉 Infrastruttura pronta: http://localhost:5173"
 psql "${DATABASE_URL}" -f backend/sql/migrations/001_init.sql
 node backend/src/seed_admin.js
 
+cd /percorso/del/tuo/progetto/StreamMint
+
+# 1) crea branch per i cambiamenti
+git checkout -b feature/admin-2fa-logging-seed
+
+# 2) copia/estrai i file del pacchetto (se ancora non lo hai fatto)
+# Assumendo che lo zip sia nella stessa macchina, decomprimi nella root:
+unzip /path/to/streammint_full_update_v2.zip -d .
+
+# 3) aggiungi i nuovi file e fai commit
+git add -A
+git commit -m "Feat: admin dashboard, 2FA, rate-limiter, seeder, logging + assets"
+
+# 4) push del branch
+git push -u origin feature/admin-2fa-logging-seed
+
+# 5) apri PR (richiede gh CLI)
+gh pr create --title "Admin: 2FA, rate-limit, admin API, assets" --body "Aggiunta admin, 2FA TOTP, rate-limiter Redis, seeder, logo e documentazione." --base main
+
+git diff --staged > streammint_changes.patch
+# inviami il contenuto o applicalo su un altro clone con:
+git apply streammint_changes.patch
+
+REPO="Nico81018/StreamMint"
+
+gh secret set SPOTIFY_CLIENT_ID --repo $REPO --body "your_spotify_client_id"
+gh secret set SPOTIFY_CLIENT_SECRET --repo $REPO --body "your_spotify_client_secret"
+gh secret set GOOGLE_CLIENT_ID --repo $REPO --body "your_google_client_id"
+gh secret set GOOGLE_CLIENT_SECRET --repo $REPO --body "your_google_client_secret"
+gh secret set TANGO_API_KEY --repo $REPO --body "your_tango_api_key"
+gh secret set TANGO_SENDER_ID --repo $REPO --body "your_tango_sender_id"
+gh secret set TANGO_WEBHOOK_SECRET --repo $REPO --body "your_tango_webhook_secret"
+gh secret set DATABASE_URL --repo $REPO --body "postgres://postgres:password@host:5432/streammint"
+gh secret set REDIS_URL --repo $REPO --body "redis://:password@host:6379"
+gh secret set SESSION_KEY --repo $REPO --body "$(openssl rand -hex 32)"
+
+# backend
+cd backend
+# aggiungi le dipendenze raccomandate
+npm install otplib qrcode ioredis pg bcryptjs jsonwebtoken axios
+# (se mancano nodemon per sviluppo)
+npm install --save-dev nodemon
+
+"scripts": {
+  "start": "node src/index.js",
+  "dev": "nodemon src/index.js",
+  "seed": "node src/seed_admin.js",
+  "test": "node src/tests/antifraud.test.js"
+}
+
+cd ../frontend
+npm install
+# per Vite dev:
+npm run dev
+docker compose up -d --build
+
+export DATABASE_URL="postgres://postgres:password@localhost:5432/streammint"
+psql "${DATABASE_URL}" -f backend/sql/migrations/001_init.sql
+
+# assicurati DATABASE_URL impostato
+cd backend
+npm run seed
+# output: "Seed complete"
+
+# health check backend
+curl http://localhost:4000/health
+# test admin login (example)
+curl -X POST http://localhost:4000/admin/login -H "Content-Type: application/json" -d '{"email":"admin@example.com","password":"admin123"}'
+# should return { "token": "..." }
+
+cd backend
+npm install winston express-winston
+
+// backend/src/logger.js
+const winston = require('winston');
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console()
+    // in prod: add file or remote transport (Datadog/LogDNA)
+  ],
+});
+
+module.exports = logger;
+
+const logger = require('./logger');
+logger.info('Starting backend', { env: process.env.NODE_ENV });
+
+npm install @sendgrid/mail
+
+// backend/src/services/email.js
+const sgMail = require('@sendgrid/mail');
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+async function sendRewardFulfilled(toEmail, subject, plainText, html){
+  const msg = {
+    to: toEmail,
+    from: process.env.EMAIL_FROM || 'no-reply@streammint.io',
+    subject,
+    text: plainText,
+    html
+  };
+  return sgMail.send(msg);
+}
+
+module.exports = { sendRewardFulfilled };
+
+const { sendRewardFulfilled } = require('./services/email');
+// ...
+await sendRewardFulfilled(recipient_email, 'Il tuo voucher è arrivato', '... testo ...', '<b>...</b>');
+
