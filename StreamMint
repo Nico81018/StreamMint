@@ -488,3 +488,5 @@ git status
 git add .
 git commit -m "Apply patch: logger, email service, auto PR"
 
+streammint_patch_2_tango_fraud_admin.patch
+
