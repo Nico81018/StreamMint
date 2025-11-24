@@ -99,3 +99,16 @@ echo "[5/5] Completato!"
 echo "🎉 Infrastruttura pronta: http://localhost:5173"
 
 ./setup_infra.sh
+
+"dependencies": {
+  "otplib": "^12.0.1",
+  "qrcode": "^1.5.1",
+  "ioredis": "^5.0.0",
+  "pg": "^8.0.0",
+  "bcryptjs": "^2.4.3",
+  "jsonwebtoken": "^9.0.0"
+}
+
+psql "${DATABASE_URL}" -f backend/sql/migrations/001_init.sql
+node backend/src/seed_admin.js
+
