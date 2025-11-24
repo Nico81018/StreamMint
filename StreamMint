@@ -1,0 +1,101 @@
+git remote add origin https://github.com/Nico81018/StreamMint.git
+ git branch -M main 
+git push -u origin main
+
+#!/usr/bin/env bash
+set -e
+
+GIT_REMOTE_URL="https://github.com/Nico81018/StreamMint.git"
+BRANCH=${1:-main}
+
+echo "[1/4] Inizializzo repository Git locale…"
+if [ ! -d .git ]; then
+  git init
+  git checkout -b $BRANCH
+fi
+
+echo "[2/4] Aggiungo file e creo commit…"
+git add -A
+if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+  git commit -m "Initial import: StreamMint (full app + infra)"
+else
+  git commit -m "Update: StreamMint" || echo "Nessuna modifica"
+fi
+
+echo "[3/4] Imposto remote origin…"
+git remote remove origin 2>/dev/null || true
+git remote add origin "$GIT_REMOTE_URL"
+
+echo "[4/4] Push sul repository GitHub…"
+git push -u origin $BRANCH --force
+
+echo "🎉 Push completato! Repo: $GIT_REMOTE_URL (branch: $BRANCH)"
+
+#!/usr/bin/env bash
+set -e
+
+REPO="Nico81018/StreamMint"
+
+echo "Inserisci SPOTIFY_CLIENT_ID:"
+read SPOTIFY_CLIENT_ID
+echo "Inserisci SPOTIFY_CLIENT_SECRET:"
+read SPOTIFY_CLIENT_SECRET
+
+echo "Inserisci GOOGLE_CLIENT_ID:"
+read GOOGLE_CLIENT_ID
+echo "Inserisci GOOGLE_CLIENT_SECRET:"
+read GOOGLE_CLIENT_SECRET
+
+echo "Inserisci TANGO_API_KEY:"
+read TANGO_API_KEY
+echo "Inserisci TANGO_SENDER_ID:"
+read TANGO_SENDER_ID
+echo "Inserisci TANGO_WEBHOOK_SECRET:"
+read TANGO_WEBHOOK_SECRET
+
+echo "Inserisci DATABASE_URL:"
+read DATABASE_URL
+echo "Inserisci REDIS_URL:"
+read REDIS_URL
+
+SESSION_KEY=$(openssl rand -hex 32)
+
+echo "Imposto secrets su GitHub…"
+
+gh secret set SPOTIFY_CLIENT_ID --repo $REPO --body "$SPOTIFY_CLIENT_ID"
+gh secret set SPOTIFY_CLIENT_SECRET --repo $REPO --body "$SPOTIFY_CLIENT_SECRET"
+gh secret set GOOGLE_CLIENT_ID --repo $REPO --body "$GOOGLE_CLIENT_ID"
+gh secret set GOOGLE_CLIENT_SECRET --repo $REPO --body "$GOOGLE_CLIENT_SECRET"
+gh secret set TANGO_API_KEY --repo $REPO --body "$TANGO_API_KEY"
+gh secret set TANGO_SENDER_ID --repo $REPO --body "$TANGO_SENDER_ID"
+gh secret set TANGO_WEBHOOK_SECRET --repo $REPO --body "$TANGO_WEBHOOK_SECRET"
+gh secret set DATABASE_URL --repo $REPO --body "$DATABASE_URL"
+gh secret set REDIS_URL --repo $REPO --body "$REDIS_URL"
+gh secret set SESSION_KEY --repo $REPO --body "$SESSION_KEY"
+
+echo "🎉 Secrets configurati correttamente!"
+
+#!/usr/bin/env bash
+set -e
+
+echo "🚀 StreamMint — Setup Infrastruttura Locale"
+
+echo "[1/5] Avvio Docker Compose…"
+docker compose up -d
+
+echo "[2/5] Attesa Postgres…"
+until docker exec $(docker ps -qf "name=postgres") pg_isready -U postgres >/dev/null 2>&1; do
+  echo "Attesa che Postgres sia pronto…"
+  sleep 2
+done
+
+echo "[3/5] Eseguo migrazione SQL iniziale…"
+docker exec -i $(docker ps -qf "name=postgres") psql -U postgres -d streammint < backend/sql/migrations/001_init.sql
+
+echo "[4/5] Verifica stato servizi…"
+curl -s http://localhost:4000/health || echo "Backend non ancora pronto"
+
+echo "[5/5] Completato!"
+echo "🎉 Infrastruttura pronta: http://localhost:5173"
+
+./setup_infra.sh
