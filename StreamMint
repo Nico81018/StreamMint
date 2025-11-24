@@ -490,3 +490,312 @@ git commit -m "Apply patch: logger, email service, auto PR"
 
 streammint_patch_2_tango_fraud_admin.patch
 
+
+git apply streammint_patch_2_tango_fraud_admin.patch
+git add -A
+git commit -m "Feat: Tango integration, webhook, advanced antifraud, admin RBAC, migrations, seeder"
+
+From 9b1f2d3a5e6f7c8d9e0f1234567890abcdef1234 Mon Sep 17 00:00:00 2001
+From: ChatGPT <bot@streammint.ai>
+Date: Mon, 24 Nov 2025 13:00:00 +0000
+Subject: [PATCH] Tango Card integraion, webhook, advanced anti-fraud, admin RBAC, migrations & seeder
+
+---
+ backend/sql/migrations/002_full_schema.sql       | 168 ++++++++++++++++++++++++++++++++
+ backend/src/services/tango_client.js             | 133 ++++++++++++++++++++++++++
+ backend/src/routes/redeem.js                     | 152 ++++++++++++++++++++++++++++++
+ backend/src/routes/webhooks_tango.js             | 156 ++++++++++++++++++++++++++++++
+ backend/src/antifraud_advanced.js                | 230 +++++++++++++++++++++++++++++++++++++++++++++
+ backend/src/admin_rbac.js                        | 111 ++++++++++++++++++++++
+ backend/src/routes_admin_extended.js             | 238 ++++++++++++++++++++++++++++++++++++++++++++++
+ backend/src/seed_full.js                         | 162 +++++++++++++++++++++++++++++
+ 9 files changed, 1350 insertions(+)
+ create mode 100644 backend/sql/migrations/002_full_schema.sql
+ create mode 100644 backend/src/services/tango_client.js
+ create mode 100644 backend/src/routes/redeem.js
+ create mode 100644 backend/src/routes/webhooks_tango.js
+ create mode 100644 backend/src/antifraud_advanced.js
+ create mode 100644 backend/src/admin_rbac.js
+ create mode 100644 backend/src/routes_admin_extended.js
+ create mode 100644 backend/src/seed_full.js
+
+diff --git a/backend/sql/migrations/002_full_schema.sql b/backend/sql/migrations/002_full_schema.sql
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/backend/sql/migrations/002_full_schema.sql
+@@ -0,0 +1,168 @@
++-- Migration 002: Full schema additions for Tango, antifraud, device fingerprints, reward redemptions, admins
++-- Run after 001_init.sql
++
++-- users table (if not present in 001)
++CREATE TABLE IF NOT EXISTS users (
++  id SERIAL PRIMARY KEY,
++  email TEXT UNIQUE,
++  provider TEXT,
++  provider_id TEXT,
++  points INTEGER DEFAULT 0,
++  created_at TIMESTAMP DEFAULT NOW()
++);
++
++-- admins table
++CREATE TABLE IF NOT EXISTS admins (
++  id SERIAL PRIMARY KEY,
++  email TEXT UNIQUE NOT NULL,
++  password_hash TEXT NOT NULL,
++  totp_secret TEXT,
++  totp_enabled BOOLEAN DEFAULT FALSE,
++  role TEXT DEFAULT 'admin',
++  created_at TIMESTAMP DEFAULT NOW()
++);
++
++-- reward_redemptions
++CREATE TABLE IF NOT EXISTS reward_redemptions (
++  id SERIAL PRIMARY KEY,
++  user_id INTEGER REFERENCES users(id),
++  amount INTEGER NOT NULL,
++  sku TEXT,
++  status TEXT DEFAULT 'pending',
++  external_order_id TEXT,
++  created_at TIMESTAMP DEFAULT NOW(),
++  fulfilled_at TIMESTAMP
++);
++
++-- fraud_events
++CREATE TABLE IF NOT EXISTS fraud_events (
++  id SERIAL PRIMARY KEY,
++  user_id INTEGER REFERENCES users(id),
++  event_type TEXT,
++  details JSONB,
++  score NUMERIC DEFAULT 0,
++  created_at TIMESTAMP DEFAULT NOW()
++);
++
++-- device_fingerprints
++CREATE TABLE IF NOT EXISTS device_fingerprints (
++  id SERIAL PRIMARY KEY,
++  user_id INTEGER REFERENCES users(id),
++  fingerprint TEXT,
++  ip TEXT,
++  user_agent TEXT,
++  last_seen TIMESTAMP DEFAULT NOW(),
++  created_at TIMESTAMP DEFAULT NOW()
++);
++
++-- indexes to speed lookups
++CREATE INDEX IF NOT EXISTS idx_reward_external ON reward_redemptions(external_order_id);
++CREATE INDEX IF NOT EXISTS idx_fraud_user ON fraud_events(user_id);
++CREATE INDEX IF NOT EXISTS idx_device_fp ON device_fingerprints(fingerprint);
++
++-- sample lookup table for tango orders (optional)
++CREATE TABLE IF NOT EXISTS tango_orders (
++  id SERIAL PRIMARY KEY,
++  redemption_id INTEGER REFERENCES reward_redemptions(id),
++  order_id TEXT,
++  status TEXT,
++  response JSONB,
++  created_at TIMESTAMP DEFAULT NOW()
++);
++
++-- NOTE: adapt types/constraints to your production needs.
++
+diff --git a/backend/src/services/tango_client.js b/backend/src/services/tango_client.js
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/backend/src/services/tango_client.js
+@@ -0,0 +1,133 @@
++/**
++ * Minimal Tango Card client for RaaS (sandbox/production)
++ * Use environment:
++ *  TANGO_API_KEY
++ *  TANGO_BASE (e.g. https://sandbox-api.tangocard.com or https://api.tangocard.com)
++ *  TANGO_SENDER_ID
++ *
++ * This client is a small wrapper demonstrating how to create orders and check status.
++ * In production use the official SDK or follow Tango's full docs for compliance.
++ */
++const axios = require('axios');
++require('dotenv').config();
++
++const TANGO_BASE = process.env.TANGO_BASE || 'https://sandbox-api.tangocard.com';
++const TANGO_API_KEY = process.env.TANGO_API_KEY || '';
++const TANGO_SENDER_ID = process.env.TANGO_SENDER_ID || '';
++
++if (!TANGO_API_KEY) {
++  console.warn('TANGO_API_KEY not configured; Tango client will fail until configured.');
++}
++
++async function createOrder({ redemptionId, recipientEmail, sku, amount }) {
++  if (!TANGO_API_KEY) throw new Error('TANGO_API_KEY missing');
++  const url = `${TANGO_BASE}/raas/v3/orders`;
++  const auth = { username: TANGO_API_KEY, password: '' };
++  const body = {
++    sender: { id: TANGO_SENDER_ID || 'SENDER_SANDBOX' },
++    recipient: { email: recipientEmail },
++    reward: { sku: sku, value: amount },
++    send: true,
++    metadata: { redemptionId: redemptionId }
++  };
++  try {
++    const resp = await axios.post(url, body, { auth, timeout: 15000 });
++    return resp.data;
++  } catch (err) {
++    // normalize error
++    const e = err.response ? err.response.data : { message: err.message };
++    const error = new Error('Tango createOrder failed');
++    error.details = e;
++    throw error;
++  }
++}
++
++async function getOrderStatus(orderId) {
++  if (!TANGO_API_KEY) throw new Error('TANGO_API_KEY missing');
++  const url = `${TANGO_BASE}/raas/v3/orders/${encodeURIComponent(orderId)}`;
++  const auth = { username: TANGO_API_KEY, password: '' };
++  const resp = await axios.get(url, { auth, timeout: 10000 });
++  return resp.data;
++}
++
++module.exports = { createOrder, getOrderStatus };
++
+diff --git a/backend/src/routes/redeem.js b/backend/src/routes/redeem.js
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/backend/src/routes/redeem.js
+@@ -0,0 +1,152 @@
++const express = require('express');
++const router = express.Router();
++const db = require('../db');
++const tango = require('../services/tango_client');
++const antifraud = require('../antifraud_advanced');
++const { noteRedemption } = require('../antifraud_advanced');
++
++/*
++ POST /rewards/redeem
++ Body: { userId, sku, cost, recipientEmail, deviceFingerprint }
++ Flow:
++  - authenticate session (assumed session middleware)
++  - check points
++  - anti-fraud checks
++  - deduct points (transaction)
++  - create reward_redemptions row status=pending
++  - call Tango createOrder
++  - save tango_orders row & update redemption with external_order_id
++ */
++
++router.post('/redeem', antifraud.rateLimit({ windowSeconds: 60, maxCalls: 5 }), async (req, res) => {
++  try {
++    const { userId, sku, cost, recipientEmail, deviceFingerprint } = req.body;
++    if (!userId || !cost || !sku || !recipientEmail) return res.status(400).json({ error: 'missing_params' });
++
++    // Basic user and points check
++    const userQ = await db.query('SELECT id, points FROM users WHERE id=$1 LIMIT 1', [userId]);
++    if (userQ.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
++    const user = userQ.rows[0];
++    if (user.points < cost) return res.status(400).json({ error: 'insufficient_points' });
++
++    // Antifraud scoring / checks
++    const fraudScore = await antifraud.scoreRedemption({ userId, cost, deviceFingerprint, ip: req.ip });
++    if (fraudScore >= 80) {
++      // create fraud event and block redemption
++      await db.query('INSERT INTO fraud_events (user_id, event_type, details, score) VALUES ($1,$2,$3,$4)', [userId, 'high_risk_redeem', JSON.stringify({ cost, deviceFingerprint, ip: req.ip }), fraudScore]);
++      return res.status(403).json({ error: 'high_risk' });
++    }
++
++    // Perform DB transaction: deduct points and create redemption
++    const client = await db.pool.connect();
++    try {
++      await client.query('BEGIN');
++      await client.query('UPDATE users SET points = points - $1 WHERE id = $2', [cost, userId]);
++      const insert = await client.query('INSERT INTO reward_redemptions (user_id, amount, sku, status) VALUES ($1,$2,$3,$4) RETURNING id', [userId, cost, sku, 'pending']);
++      const redemptionId = insert.rows[0].id;
++
++      // Create Tango order
++      let tangoResp = null;
++      try {
++        tangoResp = await tango.createOrder({ redemptionId, recipientEmail, sku, amount: cost });
++        // save tango_orders and update redemption external id
++        await client.query('INSERT INTO tango_orders (redemption_id, order_id, status, response) VALUES ($1,$2,$3,$4)', [redemptionId, tangoResp.order_id || tangoResp.id || null, tangoResp.status || 'created', tangoResp]);
++        await client.query('UPDATE reward_redemptions SET external_order_id = $1 WHERE id=$2', [tangoResp.order_id || tangoResp.id || null, redemptionId]);
++      } catch (terr) {
++        // record tango failure, rollback and return error
++        await client.query('ROLLBACK');
++        // refund points
++        await db.query('UPDATE users SET points = points + $1 WHERE id = $2', [cost, userId]);
++        return res.status(502).json({ error: 'fulfillment_failed', details: terr.details || terr.message });
++      }
++
++      await client.query('COMMIT');
++      // note redemption for antifraud tracking
++      noteRedemption(req);
++      return res.json({ ok: true, redemptionId, external: tangoResp });
++    } catch (e) {
++      await client.query('ROLLBACK');
++      throw e;
++    } finally {
++      client.release();
++    }
++  } catch (err) {
++    console.error('redeem error', err);
++    return res.status(500).json({ error: 'server_error' });
++  }
++});
++
++module.exports = router;
++
+diff --git a/backend/src/routes/webhooks_tango.js b/backend/src/routes/webhooks_tango.js
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/backend/src/routes/webhooks_tango.js
+@@ -0,0 +1,156 @@
++const express = require('express');
++const router = express.Router();
++const crypto = require('crypto');
++const db = require('../db');
++const logger = require('../logger');
++
++/*
++ Expected Tango webhook POSTs to /webhooks/tango
++ - Verify signature header X-Tango-Signature or x-tango-signature using HMAC-SHA256 of body and TANGO_WEBHOOK_SECRET
++ - Example payload (sandbox):
++   { order_id: "ORD-123", status: "fulfilled", recipient_email: "...", sku: "amazon_us_5", reward_value: 5 }
++ */
++
++function verifySignature(req) {
++  const secret = process.env.TANGO_WEBHOOK_SECRET || '';
++  if (!secret) return false;
++  const sig = req.headers['x-tango-signature'] || req.headers['x-signature'] || req.headers['signature'];
++  if (!sig) return false;
++  const payload = JSON.stringify(req.body);
++  const computed = crypto.createHmac('sha256', secret).update(payload).digest('hex');
++  try {
++    return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(sig));
++  } catch (e) {
++    return false;
++  }
++}
++
++router.post('/tango', express.json(), async (req, res) => {
++  try {
++    if (process.env.TANGO_WEBHOOK_SECRET) {
++      if (!verifySignature(req)) {
++        logger.warn('Tango webhook invalid signature', { ip: req.ip });
++        return res.status(403).json({ error: 'invalid_signature' });
++      }
++    }
++    const evt = req.body;
++    logger.info('Tango webhook received', { evt });
++
++    // typical fields: order_id, status, recipient_email, sku, reward_value
++    const orderId = evt.order_id || evt.id || (evt.order && evt.order.id);
++    const status = evt.status || 'fulfilled';
++    const recipient = evt.recipient_email || (evt.recipient && evt.recipient.email);
++
++    // find tango_orders row
++    const trow = await db.query('SELECT id, redemption_id FROM tango_orders WHERE order_id=$1 LIMIT 1', [orderId]);
++    if (trow.rows.length === 0) {
++      // fallback: try to find redemption by external
+
