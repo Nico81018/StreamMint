@@ -228,3 +228,263 @@ const { sendRewardFulfilled } = require('./services/email');
 // ...
 await sendRewardFulfilled(recipient_email, 'Il tuo voucher è arrivato', '... testo ...', '<b>...</b>');
 
+chmod +x auto-pr.sh
+
+#!/usr/bin/env bash
+set -e
+
+# Usage: ./auto-pr.sh "feature/descrizione" "Titolo PR" "Descrizione lunga"
+BRANCH=${1:-feature/admin-2fa-logging-seed}
+PR_TITLE=${2:-"Admin: 2FA, rate-limit, admin API, assets"}
+PR_BODY=${3:-"Aggiunte: admin API, 2FA TOTP, rate-limiter Redis, seeder, logo e documentazione."}
+REMOTE=${4:-origin}
+BASE=${5:-main}
+
+echo "Creating branch: $BRANCH"
+git checkout -b "$BRANCH"
+
+echo "Staging all changes..."
+git add -A
+
+if git rev-parse --verify --quiet HEAD >/dev/null; then
+  echo "Creating commit..."
+  git commit -m "$PR_TITLE" || echo "No changes to commit"
+else
+  echo "Initial commit..."
+  git commit -m "$PR_TITLE" || true
+fi
+
+echo "Pushing to $REMOTE $BRANCH..."
+git remote remove "$REMOTE" 2>/dev/null || true
+# If remote origin already exists, skip adding
+if ! git remote | grep -q "^$REMOTE$"; then
+  echo "Please add remote manually before running this script or edit the script to add it."
+  exit 1
+fi
+
+git push -u "$REMOTE" "$BRANCH" --force
+
+echo "Creating PR (GitHub CLI required: gh auth login)"
+gh pr create --title "$PR_TITLE" --body "$PR_BODY" --base "$BASE" --head "$BRANCH"
+
+echo "PR created. Done."
+
+./auto-pr.sh feature/admin-2fa-logging-seed "Admin: 2FA + rate-limit" "Aggiunge admin 2FA, rate limiter, seeder, logger, email service"
+
+// backend/src/logger.js
+const { createLogger, format, transports } = require('winston');
+
+const logger = createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: format.combine(
+    format.timestamp(),
+    format.errors({ stack: true }),
+    format.splat(),
+    format.json()
+  ),
+  transports: [
+    new transports.Console()
+    // In production add file/remote transports, e.g.:
+    // new transports.File({ filename: 'logs/error.log', level: 'error' }),
+    // new transports.File({ filename: 'logs/combined.log' })
+  ],
+  exceptionHandlers: [
+    new transports.Console()
+  ],
+  rejectionHandlers: [
+    new transports.Console()
+  ]
+});
+
+module.exports = logger;
+
+// backend/src/services/email.js
+const sgMail = require('@sendgrid/mail');
+require('dotenv').config();
+
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM || 'no-reply@streammint.io';
+
+if (SENDGRID_API_KEY) sgMail.setApiKey(SENDGRID_API_KEY);
+
+async function sendRewardFulfilled(toEmail, subject, plainText, html) {
+  if (!SENDGRID_API_KEY) {
+    console.warn('SendGrid API key not configured; skipping email send.');
+    return null;
+  }
+  const msg = {
+    to: toEmail,
+    from: EMAIL_FROM,
+    subject,
+    text: plainText,
+    html
+  };
+  return sgMail.send(msg);
+}
+
+module.exports = { sendRewardFulfilled };
+
+git commit -m "Temp commit for patch"   # o fai commit come preferisci
+git format-patch -1 HEAD --stdout > ../streammint_changes.patch
+# oppure per diff non committato:
+git diff --staged > ../streammint_changes.patch
+
+git apply streammint_changes.patch
+
+cd backend
+npm install winston express-winston @sendgrid/mail
+# se non hai già: otplib qrcode ioredis pg bcryptjs jsonwebtoken
+npm install otplib qrcode ioredis pg bcryptjs jsonwebtoken
+
+const logger = require('./logger');
+logger.info('Starting backend', { port: process.env.PORT || 4000 });
+
+const { sendRewardFulfilled } = require('../services/email');
+// when you detect a fulfilled order:
+await sendRewardFulfilled(recipient_email, 'Il tuo voucher è stato consegnato', 'Hai ricevuto il voucher', '<p>Hai ricevuto il voucher</p>');
+
+streammint_full_update.patch
+
+git apply streammint_full_update.patch
+
+From 3f42b42a9d9cbb1e0cb677d820b00de71b6d4af0 Mon Sep 17 00:00:00 2001
+From: ChatGPT <bot@streammint.ai>
+Date: Sun, 24 Nov 2025 12:16:00 +0000
+Subject: [PATCH] Add logger, email service, auto PR script
+
+---
+ auto-pr.sh                       | 74 ++++++++++++++++++++++++++++++++++++++++
+ backend/src/logger.js            | 34 ++++++++++++++++++
+ backend/src/services/email.js    | 42 +++++++++++++++++++++++
+ 3 files changed, 150 insertions(+)
+ create mode 100755 auto-pr.sh
+ create mode 100644 backend/src/logger.js
+ create mode 100644 backend/src/services/email.js
+
+diff --git a/auto-pr.sh b/auto-pr.sh
+new file mode 100755
+index 0000000..9c2d871
+--- /dev/null
++++ b/auto-pr.sh
+@@ -0,0 +1,74 @@
++#!/usr/bin/env bash
++set -e
++
++# Usage:
++#   ./auto-pr.sh "feature/branch" "PR Title" "PR body" "origin" "main"
++
++BRANCH=${1:-feature/admin-2fa-logging-seed}
++PR_TITLE=${2:-"Admin: 2FA, rate-limit, logging, seeder"}
++PR_BODY=${3:-"Added admin APIs, 2FA, Redis rate limiter, seeder, logger, and email service."}
++REMOTE=${4:-origin}
++BASE=${5:-main}
++
++echo "Creating branch: $BRANCH"
++git checkout -b "$BRANCH"
++
++echo "Staging all changes..."
++git add -A
++
++if git rev-parse --verify --quiet HEAD >/dev/null; then
++  echo "Creating commit..."
++  git commit -m "$PR_TITLE" || echo "No changes to commit"
++else
++  echo "Initial commit..."
++  git commit -m "$PR_TITLE" || true
++fi
++
++echo "Pushing to $REMOTE $BRANCH..."
++git push -u "$REMOTE" "$BRANCH" --force
++
++echo "Creating PR..."
++gh pr create \
++  --title "$PR_TITLE" \
++  --body "$PR_BODY" \
++  --base "$BASE" \
++  --head "$BRANCH"
++
++echo "Done."
++
+diff --git a/backend/src/logger.js b/backend/src/logger.js
+new file mode 100644
+index 0000000..63bcd58
+--- /dev/null
++++ b/backend/src/logger.js
+@@ -0,0 +1,34 @@
++const { createLogger, format, transports } = require('winston');
++
++const logger = createLogger({
++  level: process.env.LOG_LEVEL || 'info',
++  format: format.combine(
++    format.timestamp(),
++    format.errors({ stack: true }),
++    format.splat(),
++    format.json()
++  ),
++  transports: [
++    new transports.Console()
++  ],
++  exceptionHandlers: [
++    new transports.Console()
++  ],
++  rejectionHandlers: [
++    new transports.Console()
++  ]
++});
++
++module.exports = logger;
++
+diff --git a/backend/src/services/email.js b/backend/src/services/email.js
+new file mode 100644
+index 0000000..27ab3f3
+--- /dev/null
++++ b/backend/src/services/email.js
+@@ -0,0 +1,42 @@
++const sgMail = require('@sendgrid/mail');
++require('dotenv').config();
++
++const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
++const EMAIL_FROM = process.env.EMAIL_FROM || 'no-reply@streammint.io';
++
++if (SENDGRID_API_KEY) {
++  sgMail.setApiKey(SENDGRID_API_KEY);
++}
++
++async function sendRewardFulfilled(toEmail, subject, plainText, html) {
++  if (!SENDGRID_API_KEY) {
++    console.warn('SendGrid API key missing — skipping email send.');
++    return null;
++  }
++
++  const msg = {
++    to: toEmail,
++    from: EMAIL_FROM,
++    subject,
++    text: plainText,
++    html
++  };
++
++  try {
++    return await sgMail.send(msg);
++  } catch (err) {
++    console.error('SendGrid error:', err);
++    throw err;
++  }
++}
++
++module.exports = {
++  sendRewardFulfilled
++};
++
+--
+2.34.1
+
+streammint_full_update.patch
+
+git apply streammint_full_update.patch
+
+git status
+
+git add .
+git commit -m "Apply patch: logger, email service, auto PR"
+
